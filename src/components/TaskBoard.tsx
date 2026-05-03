@@ -12,11 +12,9 @@ import {
   closestCorners,
   type DragEndEvent,
   type DragStartEvent,
-  type DragOverEvent,
 } from "@dnd-kit/core";
 import {
   SortableContext,
-  arrayMove,
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
   useSortable,
@@ -42,7 +40,9 @@ const COLUMNS: { id: TaskStatus; label: string; tone: string }[] = [
   { id: "cancelled", label: "Cancelled", tone: "bg-red-100 text-red-700" },
 ];
 
-const STATUSES = COLUMNS.map((c) => c.id) as TaskStatus[];
+const STATUSES: TaskStatus[] = COLUMNS.map((c) => c.id);
+const isStatus = (id: string): id is TaskStatus =>
+  (STATUSES as string[]).includes(id);
 
 export function TaskBoard({
   projectId,
@@ -60,7 +60,7 @@ export function TaskBoard({
   }, [initialTasks, activeId]);
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, {
       coordinateGetter: sortableKeyboardCoordinates,
     }),
@@ -71,118 +71,62 @@ export function TaskBoard({
       .filter((t) => t.status === status)
       .sort((a, b) => a.position - b.position);
 
-  const findContainer = (id: string): TaskStatus | null => {
-    if (STATUSES.includes(id as TaskStatus)) return id as TaskStatus;
-    const task = tasksState.find((t) => t.id === id);
-    return task?.status ?? null;
-  };
-
   function handleDragStart(event: DragStartEvent) {
     setActiveId(event.active.id as string);
-  }
-
-  function handleDragOver(event: DragOverEvent) {
-    const { active, over } = event;
-    if (!over) return;
-
-    const activeContainer = findContainer(active.id as string);
-    const overContainer = findContainer(over.id as string);
-
-    if (
-      !activeContainer ||
-      !overContainer ||
-      activeContainer === overContainer
-    ) {
-      return;
-    }
-
-    setTasksState((prev) => {
-      const activeTask = prev.find((t) => t.id === active.id);
-      if (!activeTask) return prev;
-
-      const updated = prev.map((t) =>
-        t.id === active.id ? { ...t, status: overContainer } : t,
-      );
-
-      return updated;
-    });
   }
 
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
     setActiveId(null);
-
     if (!over) return;
 
-    const activeContainer = findContainer(active.id as string);
-    const overContainer = findContainer(over.id as string);
-    if (!activeContainer || !overContainer) return;
+    const activeId = active.id as string;
+    const overId = over.id as string;
 
-    let newOrderedTasks: Task[] = [];
+    const activeTask = tasksState.find((t) => t.id === activeId);
+    if (!activeTask) return;
 
-    setTasksState((prev) => {
-      const inSource = prev.filter((t) => t.status === activeContainer);
-      const inTarget =
-        activeContainer === overContainer
-          ? inSource
-          : prev.filter((t) => t.status === overContainer);
+    const targetStatus: TaskStatus | undefined = isStatus(overId)
+      ? overId
+      : tasksState.find((t) => t.id === overId)?.status;
+    if (!targetStatus) return;
 
-      if (activeContainer === overContainer) {
-        const oldIndex = inSource.findIndex((t) => t.id === active.id);
-        const newIndex =
-          over.id === overContainer
-            ? inSource.length - 1
-            : inSource.findIndex((t) => t.id === over.id);
+    if (activeId === overId && activeTask.status === targetStatus) return;
 
-        if (oldIndex === -1 || newIndex === -1 || oldIndex === newIndex) {
-          newOrderedTasks = prev;
-          return prev;
-        }
+    const without = tasksState.filter((t) => t.id !== activeId);
+    const updatedActive: Task = { ...activeTask, status: targetStatus };
 
-        const reorderedColumn = arrayMove(inSource, oldIndex, newIndex).map(
-          (t, i) => ({ ...t, position: i }),
-        );
-
-        const others = prev.filter((t) => t.status !== activeContainer);
-        const next = [...others, ...reorderedColumn];
-        newOrderedTasks = next;
-        return next;
-      }
-
-      const movedTask = prev.find((t) => t.id === active.id);
-      if (!movedTask) {
-        newOrderedTasks = prev;
-        return prev;
-      }
-
-      const newSource = inSource
-        .filter((t) => t.id !== active.id)
-        .map((t, i) => ({ ...t, position: i }));
-
-      const overIndex =
-        over.id === overContainer
-          ? inTarget.length
-          : inTarget.findIndex((t) => t.id === over.id);
-
-      const newTarget = [...inTarget.filter((t) => t.id !== active.id)];
-      newTarget.splice(overIndex >= 0 ? overIndex : newTarget.length, 0, {
-        ...movedTask,
-        status: overContainer,
-      });
-      const reTarget = newTarget.map((t, i) => ({ ...t, position: i }));
-
-      const untouched = prev.filter(
-        (t) => t.status !== activeContainer && t.status !== overContainer,
+    let insertIdx: number;
+    if (isStatus(overId)) {
+      // dropped on column body — append to end of that column
+      const lastIndexInTarget = without.reduce(
+        (acc, t, i) => (t.status === targetStatus ? i : acc),
+        -1,
       );
+      insertIdx = lastIndexInTarget === -1 ? without.length : lastIndexInTarget + 1;
+    } else {
+      // dropped on a task — insert at that task's position
+      insertIdx = without.findIndex((t) => t.id === overId);
+      if (insertIdx === -1) insertIdx = without.length;
+    }
 
-      const next = [...untouched, ...newSource, ...reTarget];
-      newOrderedTasks = next;
-      return next;
-    });
+    const merged = [...without];
+    merged.splice(insertIdx, 0, updatedActive);
 
-    if (newOrderedTasks.length === 0) return;
+    const positionCounters: Record<TaskStatus, number> = {
+      todo: 0,
+      in_progress: 0,
+      completed: 0,
+      cancelled: 0,
+    };
+    const final = merged.map((t) => ({
+      ...t,
+      position: positionCounters[t.status]++,
+    }));
 
-    const updates: TaskMoveUpdate[] = newOrderedTasks.map((t) => ({
+    setTasksState(final);
+
+    const updates: TaskMoveUpdate[] = final.map((t) => ({
       id: t.id,
       status: t.status,
       position: t.position,
@@ -202,8 +146,8 @@ export function TaskBoard({
       sensors={sensors}
       collisionDetection={closestCorners}
       onDragStart={handleDragStart}
-      onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
+      onDragCancel={() => setActiveId(null)}
     >
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
         {COLUMNS.map((col) => {
@@ -214,28 +158,26 @@ export function TaskBoard({
                 items={items.map((t) => t.id)}
                 strategy={verticalListSortingStrategy}
               >
-                <div className="flex min-h-[60px] flex-col gap-2">
-                  {items.length === 0 ? (
-                    <div className="rounded-md border border-dashed bg-white/40 p-4 text-center text-xs text-muted-foreground">
-                      Drop tasks here
-                    </div>
-                  ) : (
-                    items.map((t) => (
-                      <SortableTaskCard
-                        key={t.id}
-                        task={t}
-                        projectId={projectId}
-                      />
-                    ))
-                  )}
-                </div>
+                {items.length === 0 ? (
+                  <div className="rounded-md border border-dashed bg-white/40 p-4 text-center text-xs text-muted-foreground">
+                    Drop tasks here
+                  </div>
+                ) : (
+                  items.map((t) => (
+                    <SortableTaskCard
+                      key={t.id}
+                      task={t}
+                      projectId={projectId}
+                    />
+                  ))
+                )}
               </SortableContext>
             </Column>
           );
         })}
       </div>
 
-      <DragOverlay>
+      <DragOverlay dropAnimation={null}>
         {activeTask ? (
           <TaskCard task={activeTask} projectId={projectId} dragging />
         ) : null}
@@ -261,15 +203,16 @@ function Column({
   });
 
   return (
-    <div className="flex flex-col gap-3" ref={setNodeRef}>
+    <div className="flex flex-col gap-3">
       <div
         className={`flex items-center justify-between rounded-md px-3 py-2 text-sm font-semibold ${tone}`}
       >
         <span>{label}</span>
       </div>
       <div
-        className={`rounded-md p-1 transition-colors ${
-          isOver ? "bg-slate-200/60" : ""
+        ref={setNodeRef}
+        className={`flex min-h-[120px] flex-col gap-2 rounded-md p-1 transition-colors ${
+          isOver ? "bg-slate-200/60 ring-2 ring-slate-300" : ""
         }`}
       >
         {children}
@@ -285,10 +228,16 @@ function SortableTaskCard({
   task: Task;
   projectId: string;
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: task.id, data: { type: "task" } });
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: task.id, data: { type: "task" } });
 
-  const style = {
+  const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.4 : 1,
@@ -322,8 +271,8 @@ function TaskCard({
 
   return (
     <Card
-      className={`cursor-grab bg-white active:cursor-grabbing ${
-        dragging ? "shadow-lg ring-2 ring-slate-300" : ""
+      className={`cursor-grab select-none bg-white active:cursor-grabbing ${
+        dragging ? "shadow-lg ring-2 ring-slate-400" : ""
       }`}
     >
       <CardHeader className="pb-2">

@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { and, eq, max } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import { projects, tasks, taskStatusEnum } from "@/db/schema";
@@ -88,6 +88,7 @@ export type TaskFormState = {
   error?: string;
   fieldErrors?: Record<string, string[]>;
   success?: boolean;
+  ts?: number;
 };
 
 export async function createTaskAction(
@@ -109,9 +110,9 @@ export async function createTaskAction(
 
   await assertProjectOwnership(parsed.data.projectId, userId);
 
-  const [{ maxPos }] = await db
-    .select({ maxPos: max(tasks.position) })
-    .from(tasks)
+  await db
+    .update(tasks)
+    .set({ position: sql`${tasks.position} + 1` })
     .where(
       and(
         eq(tasks.projectId, parsed.data.projectId),
@@ -119,18 +120,16 @@ export async function createTaskAction(
       ),
     );
 
-  const nextPosition = (maxPos ?? -1) + 1;
-
   await db.insert(tasks).values({
     projectId: parsed.data.projectId,
     title: parsed.data.title,
     description: parsed.data.description ?? null,
     status: parsed.data.status,
-    position: nextPosition,
+    position: 0,
   });
 
   revalidatePath(`/dashboard/${parsed.data.projectId}`);
-  return { success: true };
+  return { success: true, ts: Date.now() };
 }
 
 export async function deleteTaskAction(taskId: string, projectId: string) {

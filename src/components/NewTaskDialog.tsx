@@ -34,7 +34,7 @@ export function NewTaskDialog({ projectId }: { projectId: string }) {
       setStatus("todo");
       setOpen(false);
     }
-  }, [state.success]);
+  }, [state.ts, state.success]);
 
   return (
     <>
